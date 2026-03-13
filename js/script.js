@@ -269,9 +269,10 @@ function getClassName(src){ return src ? src.split('.')[0] : null; }
 //  ZEALAND (ZUID) & ACCOUNT ID EXTRACTION
 // ═══════════════════════════════════════════════════════════
 function extractIds(lines){
-  // Captures ZUID/zuid and AccId/account id values in both formats
-  var zuidRe  = /\b(?:ZUID|zuid)\s*[:=]\s*(\d{6,20})/gi;
-  var accRe   = /\b(?:Acc(?:ount)?Id|account\s+id)\s*[:=]\s*["']?(\d{6,20})["']?/gi;
+  // Captures log-style and JSON-style account identifiers.
+  var q = '(?:\\\\)?"';
+  var zuidRe  = new RegExp('(?:\\b(?:ZUID|OwnerZUID|zuid)\\b\\s*[:=]\\s*|' + q + '(?:ZUID|OwnerZUID|zuid)' + q + '\\s*:\\s*' + q + '?)(\\d{6,20})' + q + '?', 'gi');
+  var accRe   = new RegExp('(?:\\b(?:Acc(?:ount)?Id|AccountId|account\\s+id)\\b\\s*[:=]\\s*|' + q + '(?:Acc(?:ount)?Id|AccountId)' + q + '\\s*:\\s*' + q + '?)(\\d{6,20})' + q + '?', 'gi');
 
   var zuids = {}, accs = {};
 
@@ -609,6 +610,23 @@ var PII_RULES=[
   { type:'URL Creds', re:/https?:\/\/[^:@\s]+:[^@\s]+@[^\s"'<>]+/g },
   { type:'SSN (US)',  re:/\b\d{3}-\d{2}-\d{4}\b/g },
 ];
+var PII_FIELD_RULES = [
+  { type:'Mail Address', re:/(?:\\)?"(?:FromAddress|ToAddress|CcAddress|BccAddress|SendingAddress)(?:\\)?"\s*:\s*(?:\\)?"((?:\\.|[^"])*)"(?!\s*:)/gi },
+  { type:'Person Name', re:/(?:\\)?"(?:SenderName|RecentMailSenderName|AccountOwnerDisplayName)(?:\\)?"\s*:\s*(?:\\)?"((?:\\.|[^"])*)"(?!\s*:)/gi }
+];
+function pushPIIFinding(findings, seen, type, value, lineNo, ctx){
+  var cleanValue = String(value || '').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim();
+  if (!cleanValue) return;
+  var key = type + '|' + cleanValue;
+  if (seen[key]) return;
+  seen[key] = true;
+  findings.push({
+    type: type,
+    value: cleanValue,
+    line: lineNo,
+    ctx: String(ctx || '').replace(/\\"/g, '"').trim().slice(0, 180)
+  });
+}
 function isVersionLikeIpContext(line, startIdx, value){
   // Skip dotted numeric values when they are clearly version fields in JSON/log text.
   var windowStart = Math.max(0, startIdx - 80);
@@ -630,8 +648,14 @@ function detectPII(lines){
       rule.re.lastIndex=0; var m;
       while ((m=rule.re.exec(line))!==null){
         if ((rule.type === 'Public IP' || rule.type === 'Private IP') && isVersionLikeIpContext(line, m.index, m[0])) continue;
-        var key=rule.type+'|'+m[0]; if(seen[key]) return; seen[key]=true;
-        findings.push({ type:rule.type, value:m[0], line:idx+1, ctx:line.trim().slice(0,130) });
+        pushPIIFinding(findings, seen, rule.type, m[0], idx+1, line);
+      }
+    });
+    PII_FIELD_RULES.forEach(function(rule){
+      rule.re.lastIndex = 0;
+      var m;
+      while ((m = rule.re.exec(line)) !== null){
+        pushPIIFinding(findings, seen, rule.type, m[1], idx+1, line);
       }
     });
   });
@@ -2053,8 +2077,3 @@ function wireFeatureTabs(entries, reportData) {
   document.getElementById('aiTabBtn').onclick    = function(){ openModal('✨ AI Diagnosis', function(pid){ renderAIPanel(pid, reportData); }); };
   document.getElementById('shareTabBtn').onclick  = function(){ openModal('⬇ Download / Share', function(pid){ renderSharePanel(pid, reportData); }); };
 }
-
-
-
-
-
