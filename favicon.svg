@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- File -->
+  <path d="M14 8h24l12 12v30a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6V14a6 6 0 0 1 6-6z" fill="#2563eb"/>
+
+  <!-- File fold -->
+  <polyline points="38,8 38,20 50,20" fill="#3b82f6"/>
+
+  <!-- Log lines -->
+  <line x1="18" y1="26" x2="36" y2="26" stroke="white" stroke-width="3"/>
+  <line x1="18" y1="34" x2="32" y2="34" stroke="white" stroke-width="3"/>
+
+  <!-- Magnifier -->
+  <circle cx="42" cy="42" r="9" fill="white" stroke="#1f2937" stroke-width="4"/>
+  <line x1="48" y1="48" x2="58" y2="58" stroke="#1f2937" stroke-width="4" stroke-linecap="round"/>
+</svg>

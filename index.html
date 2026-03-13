@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Log Analyzer</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg"/>
+<link rel="stylesheet" href="css/style.css"/>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="site-header">
+  <div class="theme-toggle" id="themeToggle" title="Toggle light / dark theme">
+    <div class="toggle-opt active" id="opt-light">☀️</div>
+    <div class="toggle-opt" id="opt-dark">🌙</div>
+  </div>
+  <h1>Log <span>Analyzer</span></h1>
+  <p>Paste or upload any log file — get instant error analysis, PII detection &amp; insights</p>
+</div>
+
+<div class="wrap">
+
+  <!-- INPUT -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-label">Log Input</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-ghost" id="sampleBtn">Try Sample</button>
+        <label for="fileInput" class="btn btn-upload" style="display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M5 5l3-3 3 3"/><rect x="2" y="11" width="12" height="3" rx="1"/></svg>
+          Upload File
+        </label>
+        <input id="fileInput" type="file" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;" accept=".log,.txt,.csv,.json,.xml,.out,text/*"/>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="drop-zone" id="dropZone">
+        <textarea id="logInput" placeholder="Paste your log content here, or drag &amp; drop a file…"></textarea>
+      </div>
+      <div id="fileBadge" class="file-badge hidden"></div>
+      <div class="input-footer">
+        <span id="lineCount" class="line-count">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 2"/></svg>
+          No log loaded yet
+        </span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span id="analyzeHint" style="font-size:11px;color:var(--muted);display:none;">Paste or upload a log to analyze</span>
+          <button class="btn btn-reset hidden" id="resetBtn" onclick="location.reload()">Reset</button>
+          <button class="btn btn-primary" id="analyzeBtn" disabled title="Paste or upload a log file first">Analyze →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hidden">
+    <div class="card">
+      <div class="stats-bar" id="statsBar">
+        <!-- action buttons injected here by JS as last grid cell -->
+      </div>
+      <div class="stats-meta" id="statsMeta" style="display:flex;align-items:center;">
+        <span id="statsMetaContent"></span>
+      </div>
+      <div class="tabs" id="tabBar"></div>
+      <div id="tabPanels"></div>
+    </div>
+  </div>
+
+<!-- AI + SHARE MODALS -->
+<div id="modal-overlay" style="display:none;" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span id="modal-title">Panel</span>
+      <button class="modal-close" id="modalCloseBtn">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+</div>
+
+<script src="js/script.js"></script>
+</body>
+</html>
+
