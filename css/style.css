@@ -96,14 +96,14 @@ body.dark .card{box-shadow:0 4px 16px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.3);}
 .card-body{padding:22px 24px 24px;}
 
 /* ── BUTTONS ── */
-.btn{font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;border:none;padding:8px 16px;border-radius:8px;transition:all .18s;}
+.btn{font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;border:none;padding:9px 20px;border-radius:8px;transition:all .18s;}
 .btn-ghost{background:var(--surface);border:1px solid var(--border);color:var(--dim);}
 .btn-ghost:hover{color:var(--accent);border-color:var(--accent);}
 .btn-reset{background:var(--error);border:1px solid var(--error);color:#fff;}
 .btn-reset:hover{background:#b91c1c;border-color:#b91c1c;}
-.btn-upload{background:#0f766e;border:1px solid #0f766e;color:#fff;}
-.btn-upload:hover{background:#0d6461;border-color:#0d6461;}
-.btn-primary{background:var(--accent);color:var(--surface);padding:11px 32px;border-radius:8px;font-size:13px;font-weight:700;letter-spacing:.01em;box-shadow:0 2px 8px rgba(37,99,235,.35);}
+.btn-upload{background:#2563eb;border:1px solid #2563eb;color:#fff;}
+.btn-upload:hover{background:#1d4ed8;border-color:#1d4ed8;}
+.btn-primary{background:var(--accent);color:var(--surface);letter-spacing:.01em;box-shadow:0 2px 8px rgba(37,99,235,.35);}
 .btn-primary:hover:not(:disabled){background:#1d4ed8;box-shadow:0 4px 16px rgba(37,99,235,.5);transform:translateY(-1px);}
 .btn-primary:disabled{background:#d1d9ed;color:#9aaacf;cursor:not-allowed;box-shadow:none;opacity:1;}
 body.dark .btn-primary:disabled{background:#1c2640;color:#3a5080;}
