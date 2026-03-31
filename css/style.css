@@ -142,13 +142,14 @@ textarea{width:100%;min-height:240px;background:transparent;border:none;outline:
 .sev-badge{font-size:12px;font-weight:800;padding:4px 16px;letter-spacing:.12em;text-transform:uppercase;border-radius:4px;}
 
 /* ── TABS ── */
-.tabs{display:flex;border-bottom:1px solid var(--border);padding:6px 8px;flex-wrap:wrap;background:var(--surface2);gap:4px;}
-.tab{background:none;border:none;border-radius:6px;color:var(--dim);font-family:inherit;font-size:12px;font-weight:500;padding:6px 12px;cursor:pointer;transition:all .15s;white-space:nowrap;display:flex;align-items:center;gap:5px;}
-.tab:hover:not(.active){background:var(--border);color:var(--text);}
-.tab.active{background:var(--accent);color:var(--surface);font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.18);}
-body.dark .tab.active{box-shadow:0 1px 4px rgba(255,255,255,.15);}
-.tbadge{font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;min-width:18px;text-align:center;background:rgba(0,0,0,.12);color:inherit;}
-.tab.active .tbadge{background:rgba(255,255,255,.25);color:#fff;}
+.tabs{display:flex;border-bottom:2px solid var(--border);padding:0 16px;flex-wrap:wrap;background:var(--surface);gap:2px;}
+.tab{background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;color:var(--dim);font-family:inherit;font-size:12px;font-weight:600;padding:10px 14px;cursor:pointer;transition:all .18s;white-space:nowrap;display:flex;align-items:center;gap:6px;letter-spacing:.01em;}
+.tab:hover:not(.active){color:var(--accent);border-bottom-color:rgba(37,99,235,.3);}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700;}
+body.dark .tab.active{color:#60a5fa;border-bottom-color:#60a5fa;}
+.tbadge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;min-width:20px;text-align:center;line-height:1.4;}
+.tab.active .tbadge{background:var(--accent);color:#fff;}
+.tab:not(.active) .tbadge{background:var(--surface2);color:var(--dim);border:1px solid var(--border);}
 .tab-content{display:none;padding:20px;animation:fadein .25s ease;}
 .tab-content.active{display:block;}
 

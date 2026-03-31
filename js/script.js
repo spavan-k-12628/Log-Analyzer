@@ -737,20 +737,22 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
   var STAT_DEFS = [
     { label:'Total Entries', val:nonEmpty.length, color:'#2563eb', bg:'rgba(37,99,235,.1)',
       svg:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>'},
-    { label:'Fatal Errors',  val:counts.fatal,    color:'#dc2626', bg:'rgba(220,38,38,.1)',
+    { label:'Fatal Errors',  val:counts.fatal,    color:'#dc2626', bg:'rgba(220,38,38,.1)', tab:'lv-fatal',
       badge: counts.fatal===0 ? 'None' : '',
       svg:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'},
-    { label:'Errors',        val:counts.error,    color:'#e53e3e', bg:'rgba(229,62,62,.1)',
+    { label:'Errors',        val:counts.error,    color:'#e53e3e', bg:'rgba(229,62,62,.1)', tab:'lv-error',
       badge: errRate+'%',
       svg:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'},
-    { label:'Warnings',      val:counts.warn,     color:'#d97706', bg:'rgba(217,119,6,.1)',
+    { label:'Warnings',      val:counts.warn,     color:'#d97706', bg:'rgba(217,119,6,.1)', tab:'lv-warn',
       svg:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'},
-    { label:'PII Found',     val:pii.length,      color:'#9333ea', bg:'rgba(147,51,234,.1)',
+    { label:'PII Found',     val:pii.length,      color:'#9333ea', bg:'rgba(147,51,234,.1)', tab:'pii',
       svg:'<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'},
   ];
 
   var statCardsHtml = STAT_DEFS.map(function(s){
-    return '<div class="stat">'
+    var extraStyle = s.tab ? 'cursor:pointer;' : '';
+    var clickAttr  = s.tab ? ' onclick="switchTab(\''+s.tab+'\')"' : '';
+    return '<div class="stat" style="'+extraStyle+'"'+clickAttr+'>'
       +'<div class="stat-top">'
       +'<div class="stat-icon-wrap" style="background:'+s.bg+';">'
       +'<svg viewBox="0 0 24 24" fill="none" stroke="'+s.color+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+s.svg+'</svg>'
@@ -785,9 +787,10 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
   document.getElementById('statsMetaContent').innerHTML=metaParts.join(sep);
 
 
-  // ── Tab definitions ──
+  // ── Tab definitions — Issues is always first and default ──
   var tabDefs=[];
-  tabDefs.push({id:'summary',label:'Summary'});
+
+  tabDefs.push({id:'issues', label:'Issues'});
 
   var levelDefs=[
     {key:'fatal',label:'Fatal',  color:'#dc2626',lBg:'#fef2f2',dBg:'#2d0a0a',bBg:'#dc262622',bColor:'#dc2626'},
@@ -822,7 +825,6 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
     tabDefs.push({id:'accids',label:'Acc ID',badge:ids.accs.length,bBg:'#8b5cf622',bColor:'#8b5cf6'});
   }
 
-  tabDefs.push({id:'issues',label:'Issues'});
   tabDefs.push({id:'recs',label:'Recommendations'});
   if (pii.length>0) tabDefs.push({id:'pii',label:'PII',badge:pii.length,bBg:'#9333ea22',bColor:'#9333ea'});
 
@@ -830,8 +832,10 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
   tabDefs.push({id:'timeline', label:'📊 Timeline'});
 
   buildTabs(tabDefs);
+  // Open Issues tab by default
+  switchTab('issues');
 
-  // Pre-render only the FIRST visible tab (Summary) immediately.
+  // Pre-render only the FIRST visible tab immediately.
   // All _render tabs (Error/Warn/etc) are lazy-rendered on first click via _tabRenderRegistry.
   // This avoids building thousands of DOM nodes upfront which caused the UI freeze.
 
@@ -944,7 +948,59 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
     prose.push(sensItems.join(' and ')+' found in plain text — ensure these are not exposed in external log pipelines or reports.');
   }
 
-  var summaryHtml='<div class="overview-box">'+prose.map(function(p){return '<p>'+p+'</p>';}).join('')+'</div>';
+  // ── Pie chart: error categories breakdown ──
+  var pieInnerHtml = '';
+  var catKeys = Object.keys(catCounts);
+  if (catKeys.length > 0) {
+    var pieTotal = catKeys.reduce(function(s,k){ return s+catCounts[k]; }, 0);
+    var PIE_COLORS = ['#dc2626','#d97706','#2563eb','#059669','#9333ea','#0891b2','#f97316','#6366f1','#ec4899','#10b981','#ef4444','#84cc16'];
+    var cx=80, cy=80, outerR=72, innerR=38;
+    var slicesSvg='', legendHtml='', startAngle=-Math.PI/2;
+    catKeys.forEach(function(k,i){
+      var cat=ERROR_CATEGORIES.find(function(x){ return x.key===k; });
+      var name=cat?cat.label:k;
+      var val=catCounts[k];
+      var pct=(val/pieTotal*100).toFixed(1);
+      var angle=(val/pieTotal)*2*Math.PI;
+      var color=PIE_COLORS[i%PIE_COLORS.length];
+      var x1=cx+outerR*Math.cos(startAngle), y1=cy+outerR*Math.sin(startAngle);
+      var x2=cx+outerR*Math.cos(startAngle+angle), y2=cy+outerR*Math.sin(startAngle+angle);
+      var xi1=cx+innerR*Math.cos(startAngle), yi1=cy+innerR*Math.sin(startAngle);
+      var xi2=cx+innerR*Math.cos(startAngle+angle), yi2=cy+innerR*Math.sin(startAngle+angle);
+      var large=angle>Math.PI?1:0;
+      var tooltipTxt=name+': '+val+' ('+pct+'%)';
+      slicesSvg+='<path d="M'+xi1+','+yi1+' L'+x1+','+y1+' A'+outerR+','+outerR+' 0 '+large+',1 '+x2+','+y2+' L'+xi2+','+yi2+' A'+innerR+','+innerR+' 0 '+large+',0 '+xi1+','+yi1+' Z"'
+        +' fill="'+color+'" stroke="#fff" stroke-width="1.5"'
+        +' style="transition:transform .15s,opacity .15s;transform-origin:80px 80px;cursor:pointer;"'
+        +' onmouseenter="this.style.transform=\'scale(1.07)\';this.style.opacity=\'0.9\';document.getElementById(\'pie-tooltip\').textContent=\''+tooltipTxt.replace(/'/g,'&#39;')+'\';document.getElementById(\'pie-tooltip\').style.opacity=\'1\';"'
+        +' onmouseleave="this.style.transform=\'scale(1)\';this.style.opacity=\'1\';document.getElementById(\'pie-tooltip\').style.opacity=\'0\';"'
+        +' onclick="switchTab(\'cat-'+k+'\')"'
+        +'/>';
+      legendHtml+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;cursor:pointer;" onclick="switchTab(\'cat-'+k+'\')">'
+        +'<div style="width:10px;height:10px;border-radius:2px;background:'+color+';flex-shrink:0;"></div>'
+        +'<span style="font-size:12px;color:var(--fg);flex:1;">'+esc(name)+' — '+pct+'%</span>'
+        +'<span style="font-size:12px;color:var(--dim);font-weight:600;">'+val+'</span>'
+        +'</div>';
+      startAngle+=angle;
+    });
+    pieInnerHtml='<div style="display:flex;align-items:center;gap:20px;flex-shrink:0;flex-wrap:wrap;">'
+      +'<div style="position:relative;width:160px;height:160px;flex-shrink:0;">'
+      +'<svg width="160" height="160" viewBox="0 0 160 160">'+slicesSvg+'</svg>'
+      +'<div id="pie-tooltip" style="position:absolute;bottom:-24px;left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;white-space:nowrap;opacity:0;transition:opacity .15s;pointer-events:none;"></div>'
+      +'</div>'
+      +'<div style="flex:1;min-width:180px;">'
+      +'<div style="font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;">Error Categories</div>'
+      +legendHtml
+      +'</div>'
+      +'</div>';
+  }
+
+  // Overview box wraps prose + pie chart side by side
+  var summaryHtml='<div class="overview-box" style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;">'
+    +'<div style="flex:1;min-width:260px;">'+prose.map(function(p){return '<p>'+p+'</p>';}).join('')+'</div>'
+    +(pieInnerHtml?pieInnerHtml:'')
+    +'</div>';
+  var pieHtml = '';
 
   var detCats=Object.keys(catCounts).map(function(k){ var c=ERROR_CATEGORIES.find(function(x){ return x.key===k; }); return c?c.label:k; });
   var genPats=Object.keys(genHits).map(function(k){ return k.charAt(0).toUpperCase()+k.slice(1); });
@@ -996,10 +1052,9 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
 
   + '</div>';
 
-  document.getElementById('panel-summary').innerHTML=
+  document.getElementById('summaryPanel').innerHTML=
     '<div class="block-label" style="margin-bottom:12px;">Overview</div>'
-    + summaryHtml
-    + gridHtml;
+    + summaryHtml;
 
   // Issues
   var issues=[];
