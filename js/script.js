@@ -571,11 +571,19 @@ var PII_RULES=[
   { type:'JWT',       re:/eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}/g },
   { type:'AWS Key',   re:/\b(?:AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16}\b/g },
   { type:'URL Creds', re:/https?:\/\/[^:@\s]+:[^@\s]+@[^\s"'<>]+/g },
-  { type:'SSN (US)',  re:/\b\d{3}-\d{2}-\d{4}\b/g },
+  { type:'URL',          re:/(?:https?|file):\/\/(?!(?:[^:@\s]+:[^@\s]+@))[^\s"'<>\]\\,}{]+/g },
+  { type:'Content URI',  re:/content:\/\/[^\s"'<>\]\\,}{]+/g },
+  { type:'File Path',    re:/(?:[A-Za-z]:\\(?:[\w\s\-\.]+\\)*[\w\s\-\.]*|\/(?:home|users?|var|etc|tmp|usr|opt|private|System|Library|Applications)(?:\/[^\s"'<>\]\\,}{:*?|]+)+)/gi },
+  { type:'UNC Path',     re:/\\\\[\w\-\.]+\\[\w\-\.\$]+(?:\\[^\s"'<>,*?|]+)*/g },
+  { type:'Android Path', re:/\/(?:data\/(?:data|user\/\d+)|storage\/emulated\/\d+|sdcard)(?:\/[^\s"'<>\]\\,}{:*?|]+)+/gi },
+  { type:'Phone Number', re:/\+\d[\d\s\-\.]{8,14}\d/g },
+  { type:'SSN (US)',     re:/\b\d{3}-\d{2}-\d{4}\b/g },
 ];
 var PII_FIELD_RULES = [
   { type:'Mail Address', re:/(?:\\)?"(?:FromAddress|ToAddress|CcAddress|BccAddress|SendingAddress)(?:\\)?"\s*:\s*(?:\\)?"((?:\\.|[^"])*)"(?!\s*:)/gi },
-  { type:'Person Name', re:/(?:\\)?"(?:SenderName|RecentMailSenderName|AccountOwnerDisplayName)(?:\\)?"\s*:\s*(?:\\)?"((?:\\.|[^"])*)"(?!\s*:)/gi }
+  { type:'Person Name',   re:/(?:\\)?"(?:SenderName|RecentMailSenderName|AccountOwnerDisplayName)(?:\\)?"\s*:\s*(?:\\)?"((?:\\.|[^"])*)"(?!\s*:)/gi },
+  { type:'Bearer Token',  re:/\bBearer\s+([A-Za-z0-9\-_\.~\+\/]+=*)/gi },
+  { type:'Phone Number',  re:/(?:phone|mobile|tel|cell|contact)\s*[:\=\s]+(\+?[\d\s\(\)\-\.]{7,15})/gi },
 ];
 function pushPIIFinding(findings, seen, type, value, lineNo, ctx){
   var cleanValue = String(value || '').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim();
@@ -623,6 +631,303 @@ function detectPII(lines){
     });
   });
   return findings;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SEND MAIL FLOW DETECTION
+// ═══════════════════════════════════════════════════════════
+var SEND_MAIL_HAPPY = [
+  { step:1,  label:'Send Initiated',                        re:/SendMailDataManager\.SendMail:\d+\] START: SendMailDataManager:/ },
+  { step:2,  label:'Draft ID Resolved (Local \u2192 Server)', re:/SendMailDataManager\.SendMail:\d+\] Updating mail with ServerDraftId in DB/ },
+  { step:3,  label:'Attachments Fetched',                   re:/SendMailDataManager\.SendMail:\d+\] Attachments fetched from DB for DraftId:/ },
+  { step:4,  label:'Send Transaction Started',              re:/SendMailDataManager\.Run:\d+\] START: SendMail Txn:/ },
+  { step:5,  label:'Send Mode Identified',                  re:/SendMailDataManager\.SendMail:\d+\] SendMail - Mode:/ },
+  { step:6,  label:'API Call Made',                         re:/MailNetHandler\.SendMail:\d+\] SendMail Action:/ },
+  { step:7,  label:'Mail Moved to Sent',                    re:/SendMailDataManager\.MoveMailFromDraftsToSentInDB:\d+\] Moved mail \d+ from Drafts to Sent/, primary:true },
+  { step:8,  label:'Send Transaction Ended',                re:/SendMailDataManager\.Run:\d+\] END: SendMail Txn:/ },
+  { step:9,  label:'MailSent Notification Fired',           re:/MailDetailViewVM\.MailNotifications_MailSent:\d+\] MailSent:/ },
+  { step:10, label:'Send Fully Completed',                  re:/SendMailDataManager\.SendMail:\d+\] END: SendMailDataManager:/ },
+];
+
+var SEND_MAIL_FAILURES = [
+  { id:11, severity:'high',     label:'Ghost Mail \u2014 Stuck with No ChangeID',
+    re:/MailActivityTracker\.RemoveOlderActivities:\d+\] ChangeID is 0 while removing older activities SendMail_\d+/,
+    desc:'A SendMail activity was never acknowledged by the server (ChangeID\u00a0=\u00a00). The mail never actually sent.' },
+  { id:13, severity:'critical', label:'Send Dependency Blocked',
+    re:/ZTransactionManager\.PerformTransactionInternal:\d+\] Transaction [a-f0-9\-]+ has \d+ dependency transaction\(s\) yet to complete/,
+    desc:'A send transaction is waiting on an earlier transaction that will never complete. The send is permanently blocked and will never reach the server.' },
+  { id:14, severity:'high',     label:'Corrupt Transaction \u2014 Null JSON Payload',
+    re:/InitMailActivityTrackerDataManager\.PopulatePendingMailActionsFromTransactions:\d+\] Error in adding transaction [a-f0-9\-]+ to mailactivity tracker/,
+    desc:'A transaction was saved with a null/empty JSON payload and cannot be replayed on restart. Accumulates as dead weight in the activity tracker.' },
+  { id:15, severity:'medium',   label:'Pending Stuck Transactions on Startup',
+    re:/InitMailActivityTrackerDataManager\.PopulatePendingMailActionsFromTransactions:\d+\] Pending mail txns: ([1-9]\d*)/,
+    desc:'Transactions from previous sessions found pending on startup. A high count indicates severe accumulation from prior crashes \u2014 most will fail on replay.' },
+  { id:16, severity:'medium',   label:'Send API Network Timeout',
+    re:/CallbackExtension\.OnCanceledOrTimeOutError:\d+\] Request timed out[\s\S]{0,120}(?:SendMail|GetMailListRequest)/,
+    desc:'Send API request timed out. Mail may be in an indeterminate state \u2014 sent on the server but not confirmed locally.' },
+  { id:17, severity:'low',      label:'UI Showed Draft State Instead of Sent',
+    re:/Go to Response Panel State : DraftPanelWithSendNowState invoked/,
+    desc:'Compose window closed but detail panel transitioned to DraftPanelWithSendNowState instead of SentPanelState. Cosmetic issue \u2014 send usually succeeds.' },
+  { id:19, severity:'critical', label:'ZTransactionManager Null Type \u2014 Root Crash',
+    re:/ZTransactionManager\.PerformTransactionInternal:\d+\] System\.ArgumentNullException: Value cannot be null/,
+    desc:'Transaction controller registry returned null for a transaction type. Root cause of the dependency deadlock that blocks all sends.' },
+];
+
+function detectSendMailFlow(lines) {
+  // Extract LocalDraftId from each Step-1 occurrence to define flow boundaries
+  var localIdRe = /SendMailDataManager\.SendMail:\d+\] START: SendMailDataManager:\s*(Local_[\w\-]+)/;
+  var starts = []; // { localId, idx }
+  lines.forEach(function(line, idx) {
+    var m = localIdRe.exec(line);
+    if (m) starts.push({ localId: m[1], idx: idx });
+  });
+
+  var flows = [];
+
+  if (starts.length > 0) {
+    // One flow per Step-1; its lines run up to the next Step-1
+    starts.forEach(function(start, fi) {
+      var endIdx = fi + 1 < starts.length ? starts[fi + 1].idx : lines.length;
+      var hp = SEND_MAIL_HAPPY.map(function(s) {
+        return { step:s.step, label:s.label, primary:!!s.primary, matches:[] };
+      });
+      for (var li = start.idx; li < endIdx; li++) {
+        var ln = lines[li];
+        SEND_MAIL_HAPPY.forEach(function(s, i) {
+          if (s.re.test(ln)) hp[i].matches.push({ line:ln.trim(), lineNum:li + 1 });
+        });
+      }
+      flows.push({ flowNum:fi + 1, localId:start.localId, happyPath:hp,
+                   flowComplete:hp[6].matches.length > 0 });
+    });
+  } else {
+    // No Step-1 found — collect whatever steps are present as one unnamed flow
+    var hp = SEND_MAIL_HAPPY.map(function(s) {
+      return { step:s.step, label:s.label, primary:!!s.primary, matches:[] };
+    });
+    var anyStep = false;
+    lines.forEach(function(ln, idx) {
+      SEND_MAIL_HAPPY.forEach(function(s, i) {
+        if (s.re.test(ln)) { hp[i].matches.push({ line:ln.trim(), lineNum:idx + 1 }); anyStep = true; }
+      });
+    });
+    if (anyStep) flows.push({ flowNum:1, localId:null, happyPath:hp, flowComplete:hp[6].matches.length > 0 });
+  }
+
+  // Failures are collected globally (not per-flow)
+  var failures = [];
+  lines.forEach(function(ln, idx) {
+    SEND_MAIL_FAILURES.forEach(function(f) {
+      f.re.lastIndex = 0;
+      if (f.re.test(ln)) failures.push({ id:f.id, label:f.label, severity:f.severity, desc:f.desc, line:ln.trim(), lineNum:idx + 1 });
+    });
+  });
+
+  var doneCount = flows.filter(function(f){ return f.flowComplete; }).length;
+  var hasAnyMatch = flows.length > 0 || failures.length > 0;
+  return { flows:flows, failures:failures, hasAnyMatch:hasAnyMatch,
+           sendCount:flows.length, doneCount:doneCount, flowComplete:doneCount > 0 };
+}
+
+function renderSendMailFlowTab(data) {
+  var SEV_COLOR = { critical:'#dc2626', high:'#ea580c', medium:'#d97706', low:'#16a34a', info:'#2563eb' };
+  var SEV_BG    = { critical:'#fef2f2', high:'#fff7ed', medium:'#fffbeb', low:'#f0fdf4', info:'#eff6ff' };
+  var SEV_BG_D  = { critical:'#2d0a0a', high:'#1a0a00', medium:'#1a1000', low:'#001a0a', info:'#00102d' };
+  var SEV_ORDER = ['critical','high','medium','low','info'];
+  var FLOWS     = data.flows;
+
+  var critHighCount = data.failures.filter(function(f){ return f.severity==='critical'||f.severity==='high'; }).length;
+
+  // ── Overall status banner ──
+  var bannerColor, bannerBg, bannerBgD, bannerIcon, bannerTitle, bannerDesc;
+  if (data.flowComplete && critHighCount === 0) {
+    bannerColor='#16a34a'; bannerBg='#f0fdf4'; bannerBgD='#001a0a';
+    bannerIcon='&#10003;'; bannerTitle='Send Complete';
+    bannerDesc = data.sendCount > 1
+      ? data.doneCount+' of '+data.sendCount+' flows completed. No critical/high failures.'
+      : 'Mail successfully moved from Drafts to Sent. No critical or high-severity failures.';
+  } else if (!data.flowComplete && critHighCount > 0) {
+    bannerColor='#dc2626'; bannerBg='#fef2f2'; bannerBgD='#2d0a0a';
+    bannerIcon='&#10007;'; bannerTitle='Send Failed';
+    bannerDesc = (data.sendCount > 1 ? data.doneCount+' of '+data.sendCount+' flows completed. ' : '')
+      +critHighCount+' critical/high failure'+(critHighCount>1?'s':'')+' detected.';
+  } else {
+    bannerColor='#d97706'; bannerBg='#fffbeb'; bannerBgD='#1a1000';
+    bannerIcon='&#9888;'; bannerTitle='Partial / Inconclusive';
+    bannerDesc = data.sendCount > 1
+      ? data.doneCount+' of '+data.sendCount+' flows reached step\u00a07.'
+      : (data.flowComplete ? 'Send appears complete but failure indicators also present.' : 'Flow started but step\u00a07 not detected.');
+  }
+
+  // ── SVG flowchart for one flow ──
+  function buildFlowSVG(happyPath, idSuffix) {
+    var nW=300, nH=48, nR=7, gY=32, pX=14, pY=12;
+    var svgW = nW + pX*2;
+    var svgH = pY*2 + happyPath.length*nH + (happyPath.length-1)*gY;
+    var midX = pX + nW/2;
+    var markerId = 'sm-arr-'+idSuffix;
+    var p = [];
+    p.push('<svg width="'+svgW+'" height="'+svgH+'" viewBox="0 0 '+svgW+' '+svgH+'"'
+      +' xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:100%;">');
+    p.push('<defs><marker id="'+markerId+'" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">'
+      +'<polygon points="0 0,7 2.5,0 5" style="fill:#9ca3af"/></marker></defs>');
+
+    happyPath.forEach(function(s, i) {
+      var found = s.matches.length > 0;
+      var nx = pX, ny = pY + i*(nH+gY), cy = ny + nH/2;
+      var sc = found ? (s.primary ? '#d97706' : '#16a34a') : '#6b7280';
+      var sw = s.primary ? '2' : '1.5';
+
+      if (i > 0) {
+        var prevBtm = pY + (i-1)*(nH+gY) + nH;
+        p.push('<line x1="'+midX+'" y1="'+prevBtm+'" x2="'+midX+'" y2="'+(ny-4)+'"'
+          +' stroke="#9ca3af" stroke-width="1.5"'+(found ? '' : ' stroke-dasharray="5 3"')
+          +' marker-end="url(#'+markerId+')"/>');
+      }
+      p.push('<rect x="'+nx+'" y="'+ny+'" width="'+nW+'" height="'+nH+'" rx="'+nR+'"'
+        +' style="fill:var(--surface)" stroke="'+sc+'" stroke-width="'+sw+'"/>');
+      p.push('<circle cx="'+(nx+22)+'" cy="'+cy+'" r="13" fill="'+sc+'"/>');
+      p.push('<text x="'+(nx+22)+'" y="'+(cy+4.5)+'" text-anchor="middle"'
+        +' font-size="11" font-weight="700" font-family="system-ui,sans-serif" fill="white">'+s.step+'</text>');
+
+      var labelY = found ? cy-4 : cy+4;
+      p.push('<text x="'+(nx+44)+'" y="'+labelY+'" font-size="11" font-weight="600"'
+        +' font-family="system-ui,sans-serif" style="fill:'+(found?'var(--text)':'var(--muted)')+'">'+esc(s.label)+'</text>');
+
+      if (found) {
+        var sub = s.matches.length > 1
+          ? '\u00d7'+s.matches.length+' \u2014 L'+s.matches[0].lineNum+'\u2026L'+s.matches[s.matches.length-1].lineNum
+          : 'L'+s.matches[0].lineNum;
+        p.push('<text x="'+(nx+44)+'" y="'+(cy+11)+'" font-size="10" font-family="monospace" style="fill:var(--muted)">'+sub+'</text>');
+      } else {
+        p.push('<text x="'+(nx+44)+'" y="'+(cy+11)+'" font-size="10" font-style="italic"'
+          +' font-family="system-ui,sans-serif" style="fill:var(--muted)">not detected</text>');
+      }
+      if (s.primary) {
+        var pillX = nx+nW-8, pillY = ny+nH-9;
+        p.push('<rect x="'+(pillX-38)+'" y="'+(pillY-11)+'" width="38" height="13" rx="3" fill="#d97706"/>');
+        p.push('<text x="'+(pillX-1)+'" y="'+pillY+'" text-anchor="end" font-size="8" font-weight="700"'
+          +' font-family="system-ui,sans-serif" fill="white" letter-spacing=".06em">PRIMARY</text>');
+      }
+      var iconY = s.primary ? cy+3 : cy+5;
+      p.push('<text x="'+(nx+nW-13)+'" y="'+iconY+'" text-anchor="middle" font-size="14" font-weight="700"'
+        +' font-family="system-ui,sans-serif" fill="'+sc+'">'+(found?'\u2713':'\u2717')+'</text>');
+    });
+    p.push('</svg>');
+    return p.join('');
+  }
+
+  // ── Collapsible log lines for one flow ──
+  function buildStepLogs(happyPath) {
+    var rows = happyPath.filter(function(s){ return s.matches.length > 0; });
+    if (!rows.length) return '';
+    var out = '';
+    rows.forEach(function(s) {
+      var sc = s.primary ? '#d97706' : '#16a34a';
+      out += '<details style="margin-bottom:5px;border:1px solid var(--border);border-radius:6px;overflow:hidden;">'
+        +'<summary style="cursor:pointer;padding:7px 12px;font-size:12px;font-weight:600;'
+        +'display:flex;align-items:center;gap:8px;list-style:none;background:var(--surface);">'
+        +'<span style="width:20px;height:20px;border-radius:50%;background:'+sc+';color:#fff;font-size:10px;'
+        +'font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">'+s.step+'</span>'
+        +esc(s.label)
+        +'<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--muted);">'
+        +s.matches.length+' match'+(s.matches.length>1?'es':'')+'</span></summary>'
+        +'<div>';
+      s.matches.forEach(function(m) {
+        out += '<div style="padding:5px 12px;border-top:1px solid var(--border);background:var(--stack-bg);">'
+          +'<span style="font-size:10px;color:var(--muted);font-family:monospace;margin-right:8px;">L'+m.lineNum+'</span>'
+          +'<span style="font-size:11px;font-family:monospace;color:var(--stack-text);'
+          +'word-break:break-all;white-space:pre-wrap;">'+esc(m.line.slice(0,300))+'</span></div>';
+      });
+      out += '</div></details>';
+    });
+    return out;
+  }
+
+  var html = '<div style="padding:16px 20px;">';
+
+  // ── Top banner ──
+  html += '<div class="sm-banner" data-lbg="'+bannerBg+'" data-dbg="'+bannerBgD+'" style="'
+    +'display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:8px;'
+    +'border:1px solid '+bannerColor+'44;background:'+bannerBg+';margin-bottom:20px;">'
+    +'<span style="font-size:22px;font-weight:700;color:'+bannerColor+';">'+bannerIcon+'</span>'
+    +'<div>'
+    +'<div style="font-size:15px;font-weight:700;color:'+bannerColor+';">'+bannerTitle
+    +(data.sendCount > 1 ? ' <span style="font-size:12px;font-weight:500;opacity:.8;">('+data.sendCount+' flows)</span>' : '')+'</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:2px;">'+esc(bannerDesc)+'</div>'
+    +'</div></div>';
+
+  // ── Per-flow cards ──
+  FLOWS.forEach(function(flow, fi) {
+    var fc = flow.flowComplete ? '#16a34a' : '#dc2626';
+    var fIcon = flow.flowComplete ? '&#10003;' : '&#10007;';
+    var fLabel = flow.flowComplete ? 'Complete' : 'Incomplete';
+    var stepsFound = flow.happyPath.filter(function(s){ return s.matches.length > 0; }).length;
+
+    html += '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden;">';
+
+    // Card header
+    html += '<div style="padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);'
+      +'display:flex;align-items:center;gap:10px;">'
+      +'<span style="font-size:13px;font-weight:700;color:var(--text);">Flow '+(fi+1)+'</span>'
+      +(flow.localId
+        ? '<code style="font-size:11px;background:var(--stack-bg);color:var(--stack-text);'
+          +'padding:2px 7px;border-radius:4px;">'+esc(flow.localId)+'</code>'
+        : '')
+      +'<span style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:'+fc+';">'
+      +fIcon+' '+fLabel+'</span>'
+      +'<span style="font-size:11px;color:var(--muted);">'+stepsFound+'/10 steps</span>'
+      +'</div>';
+
+    // Card body: chart left, logs right
+    html += '<div style="display:flex;gap:0;align-items:flex-start;flex-wrap:wrap;">';
+
+    // Left: SVG chart
+    html += '<div style="padding:16px;flex-shrink:0;border-right:1px solid var(--border);">'
+      + buildFlowSVG(flow.happyPath, fi)
+      +'</div>';
+
+    // Right: collapsible log lines
+    html += '<div style="flex:1;min-width:260px;padding:12px 16px;">'
+      +'<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;'
+      +'color:var(--muted);margin-bottom:8px;">Matched Log Lines</div>'
+      + (buildStepLogs(flow.happyPath) || '<div style="font-size:12px;color:var(--muted);padding:8px 0;">No steps detected.</div>')
+      +'</div>';
+
+    html += '</div></div>'; // end card body + card
+  });
+
+  // ── Failures (global) ──
+  if (data.failures.length > 0) {
+    html += '<div style="margin-top:4px;">'
+      +'<div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;'
+      +'color:var(--muted);margin-bottom:10px;">Failure Indicators ('+data.failures.length+')</div>';
+
+    SEV_ORDER.forEach(function(sev) {
+      var sevFailures = data.failures.filter(function(f){ return f.severity===sev; });
+      if (!sevFailures.length) return;
+      var col = SEV_COLOR[sev], bg = SEV_BG[sev], bgD = SEV_BG_D[sev];
+      sevFailures.forEach(function(f) {
+        html += '<div class="sm-failure-card" data-lbg="'+bg+'" data-dbg="'+bgD+'" style="'
+          +'margin-bottom:8px;padding:12px 14px;border-radius:7px;border:1px solid '+col+'33;background:'+bg+';">'
+          +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+          +'<span style="font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;'
+          +'padding:2px 7px;border-radius:4px;background:'+col+';color:#fff;">'+sev+'</span>'
+          +'<span style="font-size:13px;font-weight:600;color:var(--text);">'+esc(f.label)+'</span>'
+          +'<span style="margin-left:auto;font-size:11px;color:var(--muted);">L'+f.lineNum+'</span>'
+          +'</div>'
+          +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'+esc(f.desc)+'</div>'
+          +'<div style="font-size:11px;font-family:monospace;background:var(--stack-bg);color:var(--stack-text);'
+          +'padding:7px 10px;border-radius:5px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5;">'
+          +esc(f.line.slice(0,300))+'</div>'
+          +'</div>';
+      });
+    });
+    html += '</div>';
+  }
+
+  html += '</div>';
+  return html;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -815,6 +1120,19 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
       }); })(data,cat);
     }
   });
+
+  // Send Mail Flow tab
+  var sendMailData = detectSendMailFlow(nonEmpty);
+  if (sendMailData.hasAnyMatch) {
+    var smCritHigh = sendMailData.failures.filter(function(f){ return f.severity==='critical'||f.severity==='high'; }).length;
+    (function(d,ch){ tabDefs.push({
+      id:'sendmail', label:'Send Mail Flow',
+      badge: d.failures.length || d.sendCount || null,
+      bBg:   ch > 0 ? '#ef444422' : '#22c55e22',
+      bColor:ch > 0 ? '#ef4444'   : '#22c55e',
+      _render: function(pid){ document.getElementById(pid).innerHTML = renderSendMailFlowTab(d); }
+    }); })(sendMailData, smCritHigh);
+  }
 
   // ZUID tab
   if (ids.zuids.length>0){
