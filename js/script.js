@@ -517,6 +517,86 @@ function renderStack(lines){
   }).join('\n');
 }
 var _sid=0;
+
+// ── SEARCH / FILTER STATE ──
+var _allEntries = [];
+var _rawLines = [];
+var _filterQ = '';
+var _tabPermanentRenderers = {};
+function filteredEntries(){
+  if (!_filterQ) return _allEntries;
+  var q=_filterQ.toLowerCase();
+  return _allEntries.filter(function(e){
+    return e.body.some(function(l){ return l.toLowerCase().indexOf(q)>=0; });
+  });
+}
+function buildProgressRing(pct, color){
+  var r=13,cx=18,cy=18,size=36;
+  var circ=2*Math.PI*r;
+  var val=Math.min(100,Math.max(0,parseFloat(pct)||0));
+  var dash=(val/100)*circ;
+  return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 '+size+' '+size+'" style="display:block;">'
+    +'<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="none" stroke="var(--border)" stroke-width="2.5"/>'
+    +'<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="none" stroke="'+color+'" stroke-width="2.5"'
+    +' stroke-dasharray="'+dash.toFixed(1)+' '+circ.toFixed(1)+'" stroke-linecap="round"'
+    +' transform="rotate(-90 '+cx+' '+cy+')"/>'
+    +'<text x="'+cx+'" y="'+(cy+4)+'" text-anchor="middle" font-size="7.5" font-weight="700"'
+    +' font-family="-apple-system,system-ui,sans-serif" fill="'+color+'">'+val+'%</text>'
+    +'</svg>';
+}
+function buildSparkline(entries, level, color){
+  var filtered=entries.filter(function(e){ return e.level===level; });
+  if (filtered.length<2) return '';
+  var buckets={};
+  filtered.forEach(function(e){
+    var ts=getTimestamp(e.header);
+    if (!ts) return;
+    var d=new Date(ts.replace(/(\d{4}[-\/]\d{2}[-\/]\d{2})\s/,'$1T').replace(/\//g,'-'));
+    if (isNaN(d.getTime())) return;
+    var b=Math.floor(d.getTime()/3600000);
+    buckets[b]=(buckets[b]||0)+1;
+  });
+  var keys=Object.keys(buckets).map(Number).sort(function(a,b){return a-b;});
+  if (keys.length<2) return '';
+  var vals=keys.map(function(k){return buckets[k];});
+  var maxV=Math.max.apply(null,vals);
+  var W=56,H=16,n=vals.length,bW=Math.max(2,Math.floor((W-n)/n)),gap=1;
+  var bars=vals.map(function(v,i){
+    var bh=Math.max(2,Math.round((v/maxV)*(H-2)));
+    return '<rect x="'+(i*(bW+gap))+'" y="'+(H-bh)+'" width="'+bW+'" height="'+bh+'" rx="1" fill="'+color+'" opacity="0.55"/>';
+  }).join('');
+  return '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+bars+'</svg>';
+}
+
+function highlightQ(text){
+  if (!_filterQ) return esc(text);
+  var parts=text.split(new RegExp('('+_filterQ.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'));
+  return parts.map(function(p,i){ return i%2===1?'<mark class="search-hl">'+esc(p)+'</mark>':esc(p); }).join('');
+}
+function srCopy(idx){
+  var text=_rawLines[idx];
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(function(){
+    var btn=document.querySelector('.sr-copy-btn[data-idx="'+idx+'"]');
+    if (btn){ btn.textContent='✓'; btn.classList.add('copied'); setTimeout(function(){ btn.textContent='⎘'; btn.classList.remove('copied'); },1500); }
+  });
+}
+function applyFilter(){
+  var srBtn=document.querySelector('#tabBar .tab[data-tab="search-results"]');
+  if (_filterQ){
+    if (srBtn) srBtn.style.display='';
+    switchTab('search-results');
+    var r=_tabPermanentRenderers['search-results'];
+    if (r) r('panel-search-results');
+  } else {
+    if (srBtn) srBtn.style.display='none';
+    switchTab('issues');
+  }
+  var fe=filteredEntries();
+  var el=document.getElementById('filterCount');
+  if (el) el.textContent=_filterQ?(fe.length.toLocaleString()+' of '+_allEntries.length.toLocaleString()+' entries match'):'';
+}
+
 function renderCards(data, color, bgLight, bgDark, showCatTag){
   if (!data||data.total===0) return '<div class="empty-state"><div class="empty-icon">✓</div><div class="empty-title" style="color:'+color+';">No entries found</div></div>';
   var html='<div style="font-size:12px;color:var(--dim);margin-bottom:14px;">'+data.total+' total &nbsp;·&nbsp; '+data.groups.length+' unique group(s) &nbsp;·&nbsp; click card to expand stack trace</div>';
@@ -531,7 +611,7 @@ function renderCards(data, color, bgLight, bgDark, showCatTag){
     // Use CSS variable trick for dark/light bg
     var cardStyle='style="border-left:4px solid '+color+';background:'+bgLight+';"';
     // We'll use a data attribute so dark mode can be handled via CSS (inline bg is overridden)
-    html+='<div class="log-card" data-lbg="'+bgLight+'" data-dbg="'+bgDark+'" style="border-left:4px solid '+color+';">';
+    html+='<div class="log-card" data-lbg="'+bgLight+'" data-dbg="'+bgDark+'" style="border-left:4px solid '+color+';background:'+bgLight+';">';
     html+='<div class="log-card-head" style="background:'+bgLight+';" '+(hasStack?'onclick="toggleStack(\''+sid+'\')"':'')+' data-lbg="'+bgLight+'" data-dbg="'+bgDark+'">';
     html+='<div style="flex:1;min-width:0;">';
     if (showCatTag&&catDef) html+='<div class="log-card-category" style="color:'+catDef.color+';">'+esc(catDef.label)+'</div>';
@@ -958,14 +1038,15 @@ var _tabRenderRegistry = {};
 
 function buildTabs(tabDefs){
   _tabRenderRegistry = {};
+  _tabPermanentRenderers = {};
   var barHtml='', panelsHtml='';
   tabDefs.forEach(function(t,i){
     var active=i===0?' active':'';
     var badge=t.badge?'<span class="tbadge" style="background:'+t.bBg+';color:'+t.bColor+';">'+t.badge+'</span>':'';
-    barHtml+='<button class="tab'+active+'" data-tab="'+t.id+'">'+esc(t.label)+badge+'</button>';
+    barHtml+='<button class="tab'+active+'" data-tab="'+t.id+'"'+(t._hidden?' style="display:none;"':'')+'>'+esc(t.label)+badge+'</button>';
     // All panels created empty; content injected on first click (lazy)
     panelsHtml+='<div id="panel-'+t.id+'" class="tab-content'+active+'"></div>';
-    if (t._render) _tabRenderRegistry[t.id] = t._render;
+    if (t._render) { _tabRenderRegistry[t.id]=t._render; _tabPermanentRenderers[t.id]=t._render; }
   });
   document.getElementById('tabBar').innerHTML=barHtml;
   document.getElementById('tabPanels').innerHTML=panelsHtml;
@@ -1011,7 +1092,7 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
   var nonEmpty=raw.split('\n').filter(function(l){ return l.trim(); });
   var counts={fatal:0,error:0,warn:0,info:0}, catCounts={}, genHits={};
   var firstTs=null, lastTs=null, byClass={};
-  var entries=parseEntries(raw);
+  var entries=parseEntries(raw); _allEntries=entries; _rawLines=nonEmpty; _filterQ='';
 
   entries.forEach(function(e){
     var lv=e.level;
@@ -1044,11 +1125,14 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
       svg:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>'},
     { label:'Fatal Errors',  val:counts.fatal,    color:'#dc2626', bg:'rgba(220,38,38,.1)', tab:'lv-fatal',
       badge: counts.fatal===0 ? 'None' : '',
+      sparkline: buildSparkline(entries,'fatal','#dc2626'),
       svg:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'},
     { label:'Errors',        val:counts.error,    color:'#e53e3e', bg:'rgba(229,62,62,.1)', tab:'lv-error',
-      badge: errRate+'%',
+      ring: buildProgressRing(errRate,'#e53e3e'),
+      sparkline: buildSparkline(entries,'error','#e53e3e'),
       svg:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'},
     { label:'Warnings',      val:counts.warn,     color:'#d97706', bg:'rgba(217,119,6,.1)', tab:'lv-warn',
+      sparkline: buildSparkline(entries,'warn','#d97706'),
       svg:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'},
     { label:'PII Found',     val:pii.length,      color:'#9333ea', bg:'rgba(147,51,234,.1)', tab:'pii',
       svg:'<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'},
@@ -1062,10 +1146,11 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
       +'<div class="stat-icon-wrap" style="background:'+s.bg+';">'
       +'<svg viewBox="0 0 24 24" fill="none" stroke="'+s.color+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+s.svg+'</svg>'
       +'</div>'
-      +(s.badge!==undefined?'<span class="stat-badge">'+s.badge+'</span>':'')
+      +(s.ring?s.ring:s.badge!==undefined?'<span class="stat-badge">'+s.badge+'</span>':'')
       +'</div>'
       +'<div class="stat-val" style="color:'+s.color+'">'+s.val.toLocaleString()+'</div>'
       +'<div class="stat-label">'+s.label+'</div>'
+      +(s.sparkline?'<div class="stat-sparkline">'+s.sparkline+'</div>':'')
       +'</div>';
   }).join('');
 
@@ -1149,7 +1234,62 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
   // Feature tabs
   tabDefs.push({id:'timeline', label:'📊 Timeline'});
 
+  // Search results tab (hidden until a keyword is typed)
+  tabDefs.push({id:'search-results', label:'🔍 Search Results', _hidden:true,
+    _render:function(pid){
+      var q=_filterQ.toLowerCase();
+      var matches=[];
+      for (var i=0;i<_rawLines.length;i++){
+        if (_rawLines[i].toLowerCase().indexOf(q)>=0){
+          matches.push({line:_rawLines[i], lineNum:i+1});
+        }
+      }
+      if (!matches.length){
+        document.getElementById(pid).innerHTML='<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-title">No lines match <strong>'+esc(_filterQ)+'</strong></div></div>';
+        return;
+      }
+      var LV_COLOR={fatal:'#dc2626',error:'#e53e3e',warn:'#d97706',info:'#059669'};
+      var lvCounts={fatal:0,error:0,warn:0,info:0};
+      matches.forEach(function(m){ var lv=getLevel(m.line); if(lvCounts[lv]!==undefined) lvCounts[lv]++; });
+      var html='<div class="sr-header">Found <strong>'+matches.length.toLocaleString()+'</strong> line'+(matches.length!==1?'s':'')+' matching <strong>'+esc(_filterQ)+'</strong></div>';
+      html+='<div class="sr-breakdown">';
+      ['fatal','error','warn','info'].forEach(function(lv){
+        if (!lvCounts[lv]) return;
+        html+='<span class="sr-bd-pill" style="color:'+LV_COLOR[lv]+';border-color:'+LV_COLOR[lv]+'22;background:'+LV_COLOR[lv]+'11;">'+lv.toUpperCase()+' <strong>'+lvCounts[lv].toLocaleString()+'</strong></span>';
+      });
+      html+='</div>';
+      html+='<div class="sr-list">';
+      matches.forEach(function(m){
+        var lv=getLevel(m.line);
+        var lc=LV_COLOR[lv]||'#6b7280';
+        html+='<div class="sr-row">';
+        html+='<span class="sr-lv" style="color:'+lc+';">'+lv.toUpperCase()+'</span>';
+        html+='<span class="sr-ln">L'+m.lineNum+'</span>';
+        html+='<span class="sr-text">'+highlightQ(m.line.trim())+'</span>';
+        html+='<button class="sr-copy-btn" data-idx="'+(m.lineNum-1)+'" onclick="srCopy('+(m.lineNum-1)+')" title="Copy line">⎘</button>';
+        html+='</div>';
+      });
+      html+='</div>';
+      document.getElementById(pid).innerHTML=html;
+    }
+  });
+
   buildTabs(tabDefs);
+
+  // ── Wire search bar ──
+  var sb=document.getElementById('searchBar');
+  if (sb) sb.style.display='';
+  var fi=document.getElementById('filterInput');
+  var fc=document.getElementById('filterClear');
+  if (fi){
+    fi.value='';
+    fi.oninput=function(){ _filterQ=fi.value.trim(); if(fc) fc.style.display=_filterQ?'':'none'; applyFilter(); };
+  }
+  if(fc) fc.onclick=function(){ fi.value=''; _filterQ=''; fc.style.display='none'; applyFilter(); };
+  document.querySelectorAll('.filter-level-btn').forEach(function(btn){
+    btn.onclick=function(){ switchTab('lv-'+btn.getAttribute('data-level')); };
+  });
+
   // Open Issues tab by default
   switchTab('issues');
 
@@ -1376,33 +1516,34 @@ document.getElementById('analyzeBtn').addEventListener('click', function(){
 
   // Issues
   var issues=[];
-  if (counts.fatal>0) issues.push({color:'#dc2626',lv:'FATAL',title:counts.fatal+' Fatal Error(s)',desc:'Fatal entries detected. Check the Fatal tab for stack traces.'});
-  if (catCounts.runtime) issues.push({color:'#ef4444',lv:'ERROR',title:'Runtime Exceptions',desc:catCounts.runtime+' runtime exception(s) found.'});
-  if (catCounts.auth) issues.push({color:'#f97316',lv:'ERROR',title:'Auth & Authorization Failures',desc:catCounts.auth+' auth-related event(s): token expired, 401, 403, etc.'});
-  if (catCounts.database) issues.push({color:'#3b82f6',lv:'ERROR',title:'Database Errors',desc:catCounts.database+' DB error(s): deadlock, connection pool, SQL exceptions.'});
-  if (catCounts.perf) issues.push({color:'#eab308',lv:'WARN',title:'Performance Issues',desc:catCounts.perf+' performance event(s): OOM, rate limiting, thread starvation.'});
-  if (catCounts.fileio) issues.push({color:'#8b5cf6',lv:'ERROR',title:'File / IO Errors',desc:catCounts.fileio+' file/IO error(s): not found, permission denied, disk full.'});
-  if (catCounts.http) issues.push({color:'#10b981',lv:'ERROR',title:'HTTP / API Errors',desc:catCounts.http+' HTTP error(s): 4xx/5xx status codes.'});
-  if (catCounts.sqlite) issues.push({color:'#f59e0b',lv:'ERROR',title:'SQLite / DB Errors',desc:catCounts.sqlite+' SQLite error(s): incomplete input, error codes, query failures.'});
-  if (catCounts.sync) issues.push({color:'#6366f1',lv:'ERROR',title:'Sync / Transaction Failures',desc:catCounts.sync+' sync failure(s): retries exhausted, draft/send/fetch errors.'});
-  if (catCounts.network) issues.push({color:'#0ea5e9',lv:'ERROR',title:'Network / Socket Errors',desc:catCounts.network+' network error(s): socket disconnects, WebSocket failures.'});
-  if (catCounts.calendar) issues.push({color:'#ec4899',lv:'WARN',title:'Calendar Parse Errors',desc:catCounts.calendar+' calendar parse error(s): invalid or unrecognised calendar types.'});
-  if (catCounts.draft) issues.push({color:'#84cc16',lv:'WARN',title:'Draft / Compose Issues',desc:catCounts.draft+' draft/compose issue(s): nil summaries, missing thread mail, sync failures.'});
-  if (catCounts.dbinit) issues.push({color:'#dc2626',lv:'FATAL',title:'DB Init / Connection Errors',desc:catCounts.dbinit+' DB init error(s): connection not initialized, read-only database.'});
-  if (catCounts.oauth) issues.push({color:'#ea580c',lv:'ERROR',title:'OAuth / Token Errors',desc:catCounts.oauth+' auth error(s): invalid access token, credential vault failures.'});
-  if (catCounts.wssocket) issues.push({color:'#7c3aed',lv:'ERROR',title:'WebSocket Errors',desc:catCounts.wssocket+' WebSocket error(s): timeout, host not resolved, connection aborted.'});
-  if (catCounts.filenotfound) issues.push({color:'#0891b2',lv:'ERROR',title:'File / Resource Not Found',desc:catCounts.filenotfound+' resource error(s): missing files, profile pics, shared folder fetch failures.'});
-  if (catCounts.nullref) issues.push({color:'#be185d',lv:'FATAL',title:'Null Reference Errors',desc:catCounts.nullref+' null reference error(s): uninitialized objects on UI or data thread.'});
-  if (catCounts.parsewin) issues.push({color:'#b45309',lv:'ERROR',title:'Parse / Format Errors',desc:catCounts.parsewin+' parse error(s): malformed notification content, stream data format issues.'});
-  if (catCounts.appcrash)     issues.push({color:'#7a0000',lv:'FATAL',title:'App Crash (SIGABRT/EXC)',desc:catCounts.appcrash+' crash signal(s): application terminated via SIGABRT or exception. Crash log captured by KSCrash.'});
-  if (catCounts.uitablecrash) issues.push({color:'#991b1b',lv:'FATAL',title:'UI Table / Outline Crash',desc:catCounts.uitablecrash+' UIKit table crash(es): NSOutlineView/NSTableView insertRowsAtIndexes caused NSInternalInconsistencyException during scroll.'});
-  if (catCounts.kotlincrash)  issues.push({color:'#92400e',lv:'FATAL',title:'Kotlin / KMM Runtime Crash',desc:catCounts.kotlincrash+' KMM crash(es): TerminateHandler fired in ZohoCRMCore/SchemaSdk Kotlin runtime.'});
-  if (catCounts.uithread)     issues.push({color:'#5b21b6',lv:'FATAL',title:'Main Thread Violation',desc:catCounts.uithread+' main-thread crash(es): crash triggered on Thread 0 (com.apple.main-thread) during UI update.'});
-  if (pii.length) issues.push({color:'#9333ea',lv:'WARN',title:'PII / Sensitive Data',desc:pii.length+' sensitive data instance(s). See the PII tab.'});
+  if (counts.fatal>0) issues.push({color:'#dc2626',lv:'FATAL',tab:'lv-fatal',title:counts.fatal+' Fatal Error(s)',desc:'Fatal entries detected. Check the Fatal tab for stack traces.'});
+  if (catCounts.runtime) issues.push({color:'#ef4444',lv:'ERROR',tab:'cat-runtime',title:'Runtime Exceptions',desc:catCounts.runtime+' runtime exception(s) found.'});
+  if (catCounts.auth) issues.push({color:'#f97316',lv:'ERROR',tab:'cat-auth',title:'Auth & Authorization Failures',desc:catCounts.auth+' auth-related event(s): token expired, 401, 403, etc.'});
+  if (catCounts.database) issues.push({color:'#3b82f6',lv:'ERROR',tab:'cat-database',title:'Database Errors',desc:catCounts.database+' DB error(s): deadlock, connection pool, SQL exceptions.'});
+  if (catCounts.perf) issues.push({color:'#eab308',lv:'WARN',tab:'cat-perf',title:'Performance Issues',desc:catCounts.perf+' performance event(s): OOM, rate limiting, thread starvation.'});
+  if (catCounts.fileio) issues.push({color:'#8b5cf6',lv:'ERROR',tab:'cat-fileio',title:'File / IO Errors',desc:catCounts.fileio+' file/IO error(s): not found, permission denied, disk full.'});
+  if (catCounts.http) issues.push({color:'#10b981',lv:'ERROR',tab:'cat-http',title:'HTTP / API Errors',desc:catCounts.http+' HTTP error(s): 4xx/5xx status codes.'});
+  if (catCounts.sqlite) issues.push({color:'#f59e0b',lv:'ERROR',tab:'cat-sqlite',title:'SQLite / DB Errors',desc:catCounts.sqlite+' SQLite error(s): incomplete input, error codes, query failures.'});
+  if (catCounts.sync) issues.push({color:'#6366f1',lv:'ERROR',tab:'cat-sync',title:'Sync / Transaction Failures',desc:catCounts.sync+' sync failure(s): retries exhausted, draft/send/fetch errors.'});
+  if (catCounts.network) issues.push({color:'#0ea5e9',lv:'ERROR',tab:'cat-network',title:'Network / Socket Errors',desc:catCounts.network+' network error(s): socket disconnects, WebSocket failures.'});
+  if (catCounts.calendar) issues.push({color:'#ec4899',lv:'WARN',tab:'cat-calendar',title:'Calendar Parse Errors',desc:catCounts.calendar+' calendar parse error(s): invalid or unrecognised calendar types.'});
+  if (catCounts.draft) issues.push({color:'#84cc16',lv:'WARN',tab:'cat-draft',title:'Draft / Compose Issues',desc:catCounts.draft+' draft/compose issue(s): nil summaries, missing thread mail, sync failures.'});
+  if (catCounts.dbinit) issues.push({color:'#dc2626',lv:'FATAL',tab:'cat-dbinit',title:'DB Init / Connection Errors',desc:catCounts.dbinit+' DB init error(s): connection not initialized, read-only database.'});
+  if (catCounts.oauth) issues.push({color:'#ea580c',lv:'ERROR',tab:'cat-oauth',title:'OAuth / Token Errors',desc:catCounts.oauth+' auth error(s): invalid access token, credential vault failures.'});
+  if (catCounts.wssocket) issues.push({color:'#7c3aed',lv:'ERROR',tab:'cat-wssocket',title:'WebSocket Errors',desc:catCounts.wssocket+' WebSocket error(s): timeout, host not resolved, connection aborted.'});
+  if (catCounts.filenotfound) issues.push({color:'#0891b2',lv:'ERROR',tab:'cat-filenotfound',title:'File / Resource Not Found',desc:catCounts.filenotfound+' resource error(s): missing files, profile pics, shared folder fetch failures.'});
+  if (catCounts.nullref) issues.push({color:'#be185d',lv:'FATAL',tab:'cat-nullref',title:'Null Reference Errors',desc:catCounts.nullref+' null reference error(s): uninitialized objects on UI or data thread.'});
+  if (catCounts.parsewin) issues.push({color:'#b45309',lv:'ERROR',tab:'cat-parsewin',title:'Parse / Format Errors',desc:catCounts.parsewin+' parse error(s): malformed notification content, stream data format issues.'});
+  if (catCounts.appcrash)     issues.push({color:'#7a0000',lv:'FATAL',tab:'cat-appcrash',title:'App Crash (SIGABRT/EXC)',desc:catCounts.appcrash+' crash signal(s): application terminated via SIGABRT or exception. Crash log captured by KSCrash.'});
+  if (catCounts.uitablecrash) issues.push({color:'#991b1b',lv:'FATAL',tab:'cat-uitablecrash',title:'UI Table / Outline Crash',desc:catCounts.uitablecrash+' UIKit table crash(es): NSOutlineView/NSTableView insertRowsAtIndexes caused NSInternalInconsistencyException during scroll.'});
+  if (catCounts.kotlincrash)  issues.push({color:'#92400e',lv:'FATAL',tab:'cat-kotlincrash',title:'Kotlin / KMM Runtime Crash',desc:catCounts.kotlincrash+' KMM crash(es): TerminateHandler fired in ZohoCRMCore/SchemaSdk Kotlin runtime.'});
+  if (catCounts.uithread)     issues.push({color:'#5b21b6',lv:'FATAL',tab:'cat-uithread',title:'Main Thread Violation',desc:catCounts.uithread+' main-thread crash(es): crash triggered on Thread 0 (com.apple.main-thread) during UI update.'});
+  if (pii.length) issues.push({color:'#9333ea',lv:'WARN',tab:'pii',title:'PII / Sensitive Data',desc:pii.length+' sensitive data instance(s). See the PII tab.'});
   if (!issues.length) issues.push({color:'var(--info)',lv:'INFO',title:'No Major Issues Found',desc:'System looks healthy based on log content.'});
 
   document.getElementById('panel-issues').innerHTML=issues.map(function(iss){
-    return '<div class="issue" style="border-left:4px solid '+iss.color+';"><div class="issue-header"><span class="issue-level" style="color:'+iss.color+';">'+iss.lv+'</span><span class="issue-title">'+esc(iss.title)+'</span></div><div class="issue-desc">'+esc(iss.desc)+'</div></div>';
+    var click=iss.tab?' onclick="switchTab(\''+iss.tab+'\')" style="border-left:4px solid '+iss.color+';cursor:pointer;"':' style="border-left:4px solid '+iss.color+';"';
+    return '<div class="issue"'+click+'><div class="issue-header"><span class="issue-level" style="color:'+iss.color+';">'+iss.lv+'</span><span class="issue-title">'+esc(iss.title)+'</span>'+(iss.tab?'<span class="issue-arrow">→</span>':'')+'</div><div class="issue-desc">'+esc(iss.desc)+'</div></div>';
   }).join('');
 
   // Recommendations
